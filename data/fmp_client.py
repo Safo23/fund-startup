@@ -2,13 +2,14 @@ import os
 import requests
 from typing import Optional
 import streamlit as st
+from utils.secrets import get_secret
 
 
 class FMPClient:
     BASE_URL = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("FMP_API_KEY", "")
+        self.api_key = api_key or get_secret("FMP_API_KEY")
 
     def _get(self, endpoint: str, params: dict = None) -> dict | list:
         if not self.api_key:

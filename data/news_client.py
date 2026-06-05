@@ -3,13 +3,14 @@ import requests
 import streamlit as st
 from datetime import datetime, timedelta
 from typing import Optional
+from utils.secrets import get_secret
 
 
 class NewsAPIClient:
     BASE_URL = "https://newsapi.org/v2"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("NEWSAPI_KEY", "")
+        self.api_key = api_key or get_secret("NEWSAPI_KEY")
 
     def _get(self, endpoint: str, params: dict) -> dict:
         if not self.api_key:
