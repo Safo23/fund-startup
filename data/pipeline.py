@@ -3,58 +3,64 @@ from typing import Optional
 from .fmp_client import FMPClient
 from .yfinance_client import YFinanceClient
 
-_INCOME_MAP = {
-    "Total Revenue": "revenue",
-    "Cost Of Revenue": "costOfRevenue",
-    "Gross Profit": "grossProfit",
-    "Operating Expense": "operatingExpenses",
-    "Operating Income": "operatingIncome",
-    "EBITDA": "ebitda",
-    "Net Income": "netIncome",
-    "Basic EPS": "eps",
-    "Diluted EPS": "epsdiluted",
-}
+# Each entry: (list of possible yfinance field names to try, FMP key)
+_INCOME_CANDIDATES = [
+    (["Total Revenue", "Revenue"], "revenue"),
+    (["Cost Of Revenue", "Cost of Revenue"], "costOfRevenue"),
+    (["Gross Profit"], "grossProfit"),
+    (["Operating Expense", "Total Operating Expenses", "Operating Expenses"], "operatingExpenses"),
+    (["Operating Income", "Total Operating Income As Reported", "EBIT"], "operatingIncome"),
+    (["EBITDA", "Normalized EBITDA"], "ebitda"),
+    (["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations"], "netIncome"),
+    (["Basic EPS", "Basic Earnings Per Share"], "eps"),
+    (["Diluted EPS", "Diluted Earnings Per Share"], "epsdiluted"),
+]
 
-_BALANCE_MAP = {
-    "Total Assets": "totalAssets",
-    "Current Assets": "totalCurrentAssets",
-    "Cash And Cash Equivalents": "cashAndCashEquivalents",
-    "Total Liabilities Net Minority Interest": "totalLiabilities",
-    "Current Liabilities": "totalCurrentLiabilities",
-    "Long Term Debt": "longTermDebt",
-    "Stockholders Equity": "totalStockholdersEquity",
-}
+_BALANCE_CANDIDATES = [
+    (["Total Assets"], "totalAssets"),
+    (["Current Assets", "Total Current Assets"], "totalCurrentAssets"),
+    (["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"], "cashAndCashEquivalents"),
+    (["Total Liabilities Net Minority Interest", "Total Liabilities"], "totalLiabilities"),
+    (["Current Liabilities", "Total Current Liabilities"], "totalCurrentLiabilities"),
+    (["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], "longTermDebt"),
+    (["Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity"], "totalStockholdersEquity"),
+]
 
-_CASHFLOW_MAP = {
-    "Operating Cash Flow": "operatingCashFlow",
-    "Capital Expenditure": "capitalExpenditure",
-    "Free Cash Flow": "freeCashFlow",
-    "Common Stock Dividend Paid": "dividendsPaid",
-    "Investing Cash Flow": "netCashUsedForInvestingActivities",
-    "Financing Cash Flow": "netCashUsedProvidedByFinancingActivities",
-}
+_CASHFLOW_CANDIDATES = [
+    (["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"], "operatingCashFlow"),
+    (["Capital Expenditure", "Capital Expenditures"], "capitalExpenditure"),
+    (["Free Cash Flow"], "freeCashFlow"),
+    (["Common Stock Dividend Paid", "Cash Dividends Paid"], "dividendsPaid"),
+    (["Investing Cash Flow", "Cash Flow From Continuing Investing Activities"], "netCashUsedForInvestingActivities"),
+    (["Financing Cash Flow", "Cash Flow From Continuing Financing Activities"], "netCashUsedProvidedByFinancingActivities"),
+]
 
 
-def _yf_df_to_fmp(df: pd.DataFrame, field_map: dict, limit: int) -> list[dict]:
-    """Convert a yfinance financial DataFrame (rows=fields, cols=dates) to FMP-style list of dicts."""
+def _yf_df_to_fmp(df: pd.DataFrame, field_candidates: list, limit: int) -> list[dict]:
+    """Convert yfinance financial DataFrame to FMP-style list of dicts using fuzzy field matching."""
     if df is None or df.empty:
         return []
     result = []
     for col in list(df.columns)[:limit]:
-        date_str = str(col.date()) if hasattr(col, "date") else str(col)[:10]
+        try:
+            date_str = col.date().isoformat()
+        except Exception:
+            date_str = str(col)[:10]
         row: dict = {"date": date_str}
-        for yf_key, fmp_key in field_map.items():
-            if yf_key in df.index:
-                val = df.loc[yf_key, col]
-                row[fmp_key] = None if pd.isna(val) else float(val)
-            else:
-                row[fmp_key] = None
+        for candidates, fmp_key in field_candidates:
+            val = None
+            for name in candidates:
+                if name in df.index:
+                    raw = df.loc[name, col]
+                    val = None if pd.isna(raw) else float(raw)
+                    break
+            row[fmp_key] = val
         result.append(row)
     return result
 
 
 class DataPipeline:
-    """Orchestrates data fetching from FMP and yfinance, merging into unified structures."""
+    """Orchestrates FMP (paid) and yfinance (free fallback) into unified structures."""
 
     def __init__(self, fmp_api_key: Optional[str] = None):
         self.fmp = FMPClient(api_key=fmp_api_key)
@@ -88,7 +94,7 @@ class DataPipeline:
         quarterly = period == "quarter"
         income, balance, cashflow = [], [], []
 
-        # Try FMP first
+        # Try FMP first (works on paid plans / local)
         try:
             income = self.fmp.get_income_statement(ticker, period=period, limit=limit)
         except Exception:
@@ -102,23 +108,23 @@ class DataPipeline:
         except Exception:
             pass
 
-        # Fall back to yfinance when FMP returns nothing
+        # yfinance fallback
         if not income:
             try:
                 df = self.yf.get_income_stmt(ticker, quarterly=quarterly)
-                income = _yf_df_to_fmp(df, _INCOME_MAP, limit)
+                income = _yf_df_to_fmp(df, _INCOME_CANDIDATES, limit)
             except Exception:
                 pass
         if not balance:
             try:
                 df = self.yf.get_balance_sheet(ticker, quarterly=quarterly)
-                balance = _yf_df_to_fmp(df, _BALANCE_MAP, limit)
+                balance = _yf_df_to_fmp(df, _BALANCE_CANDIDATES, limit)
             except Exception:
                 pass
         if not cashflow:
             try:
                 df = self.yf.get_cash_flow(ticker, quarterly=quarterly)
-                cashflow = _yf_df_to_fmp(df, _CASHFLOW_MAP, limit)
+                cashflow = _yf_df_to_fmp(df, _CASHFLOW_CANDIDATES, limit)
             except Exception:
                 pass
 
@@ -134,6 +140,39 @@ class DataPipeline:
             ratios = self.fmp.get_ratios(ticker, period=period, limit=limit)
         except Exception:
             pass
+
+        # yfinance fallback: derive basic metrics from info
+        if not metrics and not ratios:
+            try:
+                info = self.yf.get_info(ticker)
+                snap = {
+                    "date": pd.Timestamp.now().date().isoformat(),
+                    "priceEarningsRatio": info.get("trailingPE"),
+                    "priceToBookRatio": info.get("priceToBook"),
+                    "priceToSalesRatio": info.get("priceToSalesTrailing12Months"),
+                    "debtEquityRatio": info.get("debtToEquity"),
+                    "returnOnEquity": info.get("returnOnEquity"),
+                    "returnOnAssets": info.get("returnOnAssets"),
+                    "currentRatio": info.get("currentRatio"),
+                    "quickRatio": info.get("quickRatio"),
+                    "grossProfitMargin": info.get("grossMargins"),
+                    "netProfitMargin": info.get("profitMargins"),
+                    "operatingProfitMargin": info.get("operatingMargins"),
+                    "enterpriseValueMultiple": info.get("enterpriseToEbitda"),
+                    "marketCap": info.get("marketCap"),
+                    "enterpriseValue": info.get("enterpriseValue"),
+                    "evToEbitda": info.get("enterpriseToEbitda"),
+                    "evToSales": info.get("enterpriseToRevenue"),
+                    "revenuePerShare": info.get("revenuePerShare"),
+                    "netIncomePerShare": info.get("trailingEps"),
+                    "freeCashFlowPerShare": info.get("freeCashflow"),
+                    "bookValuePerShare": info.get("bookValue"),
+                }
+                ratios = [snap]
+                metrics = [snap]
+            except Exception:
+                pass
+
         return {"metrics": metrics, "ratios": ratios}
 
     def get_price_data(self, ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
