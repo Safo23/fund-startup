@@ -3,41 +3,79 @@ from typing import Optional
 from .fmp_client import FMPClient
 from .yfinance_client import YFinanceClient
 
-# Each entry: (list of possible yfinance field names to try, FMP key)
+# Each entry: (list of possible yfinance field names to try in order, FMP-style key)
 _INCOME_CANDIDATES = [
     (["Total Revenue", "Revenue"], "revenue"),
     (["Cost Of Revenue", "Cost of Revenue"], "costOfRevenue"),
     (["Gross Profit"], "grossProfit"),
+    (["Research And Development", "Research And Development Expenses"], "researchAndDevelopmentExpenses"),
+    (["Selling General And Administrative", "Selling General Administrative", "General And Administrative Expense"], "sellingGeneralAndAdministrativeExpenses"),
     (["Operating Expense", "Total Operating Expenses", "Operating Expenses"], "operatingExpenses"),
     (["Operating Income", "Total Operating Income As Reported", "EBIT"], "operatingIncome"),
     (["EBITDA", "Normalized EBITDA"], "ebitda"),
+    (["Interest Expense", "Interest Expense Non Operating"], "interestExpense"),
+    (["Interest Income", "Interest Income Non Operating"], "interestIncome"),
+    (["Total Other Income Expense Net", "Other Income Expense", "Non Operating Income"], "totalOtherIncomeExpensesNet"),
+    (["Pretax Income", "Income Before Tax"], "incomeBeforeTax"),
+    (["Tax Provision", "Income Tax Expense"], "incomeTaxExpense"),
     (["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations"], "netIncome"),
     (["Basic EPS", "Basic Earnings Per Share"], "eps"),
     (["Diluted EPS", "Diluted Earnings Per Share"], "epsdiluted"),
+    (["Basic Average Shares", "Ordinary Shares Number"], "weightedAverageShsOut"),
+    (["Diluted Average Shares"], "weightedAverageShsOutDil"),
+    (["Depreciation And Amortization", "Reconciled Depreciation"], "depreciationAndAmortization"),
 ]
 
 _BALANCE_CANDIDATES = [
     (["Total Assets"], "totalAssets"),
     (["Current Assets", "Total Current Assets"], "totalCurrentAssets"),
     (["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"], "cashAndCashEquivalents"),
+    (["Other Short Term Investments", "Available For Sale Securities"], "shortTermInvestments"),
+    (["Accounts Receivable", "Net Receivables", "Receivables"], "netReceivables"),
+    (["Inventory"], "inventory"),
+    (["Other Current Assets"], "otherCurrentAssets"),
+    (["Total Non Current Assets", "Net PPE"], "totalNonCurrentAssets"),
+    (["Net PPE", "Gross PPE"], "propertyPlantEquipmentNet"),
+    (["Goodwill"], "goodwill"),
+    (["Goodwill And Other Intangible Assets", "Other Intangible Assets"], "intangibleAssets"),
+    (["Long Term Equity Investment", "Investments And Advances"], "longTermInvestments"),
     (["Total Liabilities Net Minority Interest", "Total Liabilities"], "totalLiabilities"),
     (["Current Liabilities", "Total Current Liabilities"], "totalCurrentLiabilities"),
+    (["Accounts Payable"], "accountPayables"),
+    (["Current Debt", "Current Debt And Capital Lease Obligation"], "shortTermDebt"),
+    (["Other Current Liabilities"], "otherCurrentLiabilities"),
     (["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], "longTermDebt"),
+    (["Other Non Current Liabilities"], "otherNonCurrentLiabilities"),
     (["Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity"], "totalStockholdersEquity"),
+    (["Retained Earnings"], "retainedEarnings"),
+    (["Common Stock"], "commonStock"),
 ]
 
 _CASHFLOW_CANDIDATES = [
     (["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"], "operatingCashFlow"),
-    (["Capital Expenditure", "Capital Expenditures"], "capitalExpenditure"),
+    (["Net Income", "Net Income From Continuing Operations"], "netIncome"),
+    (["Depreciation And Amortization", "Depreciation Amortization Depletion"], "depreciationAndAmortization"),
+    (["Stock Based Compensation"], "stockBasedCompensation"),
+    (["Change In Working Capital", "Changes In Account Receivables"], "changeInWorkingCapital"),
+    (["Accounts Receivable", "Change In Receivables"], "accountsReceivables"),
+    (["Inventory", "Change In Inventory"], "inventory"),
+    (["Accounts Payable", "Change In Payable"], "accountsPayables"),
+    (["Capital Expenditure", "Capital Expenditures", "Purchase Of PPE"], "capitalExpenditure"),
     (["Free Cash Flow"], "freeCashFlow"),
-    (["Common Stock Dividend Paid", "Cash Dividends Paid"], "dividendsPaid"),
+    (["Purchase Of Investment", "Purchase Of Business"], "acquisitionsNet"),
+    (["Sale Of Investment", "Proceeds From Sale Of Investment"], "salesMaturitiesOfInvestments"),
     (["Investing Cash Flow", "Cash Flow From Continuing Investing Activities"], "netCashUsedForInvestingActivities"),
+    (["Common Stock Repurchased", "Repurchase Of Capital Stock"], "commonStockRepurchased"),
+    (["Common Stock Issued", "Proceeds From Issuance Of Common Stock"], "commonStockIssued"),
+    (["Common Stock Dividend Paid", "Cash Dividends Paid", "Payment Of Dividends"], "dividendsPaid"),
+    (["Long Term Debt Issuance", "Proceeds From Debt"], "debtRepayment"),
     (["Financing Cash Flow", "Cash Flow From Continuing Financing Activities"], "netCashUsedProvidedByFinancingActivities"),
+    (["End Cash Position", "Changes In Cash"], "netChangeInCash"),
 ]
 
 
 def _yf_df_to_fmp(df: pd.DataFrame, field_candidates: list, limit: int) -> list[dict]:
-    """Convert yfinance financial DataFrame to FMP-style list of dicts using fuzzy field matching."""
+    """Convert yfinance financial DataFrame to FMP-style list of dicts."""
     if df is None or df.empty:
         return []
     result = []
@@ -94,7 +132,6 @@ class DataPipeline:
         quarterly = period == "quarter"
         income, balance, cashflow = [], [], []
 
-        # Try FMP first (works on paid plans / local)
         try:
             income = self.fmp.get_income_statement(ticker, period=period, limit=limit)
         except Exception:
@@ -108,7 +145,6 @@ class DataPipeline:
         except Exception:
             pass
 
-        # yfinance fallback
         if not income:
             try:
                 df = self.yf.get_income_stmt(ticker, quarterly=quarterly)
@@ -141,7 +177,6 @@ class DataPipeline:
         except Exception:
             pass
 
-        # yfinance fallback: derive basic metrics from info
         if not metrics and not ratios:
             try:
                 info = self.yf.get_info(ticker)
