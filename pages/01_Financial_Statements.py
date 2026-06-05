@@ -1,8 +1,10 @@
 import os
+import pandas as pd
 import streamlit as st
+import yfinance as yf
+import plotly.express as px
 from data.pipeline import DataPipeline
-from components.charts import render_financial_bar_chart
-from components.tables import render_financial_table, render_metric_cards
+from components.tables import render_metric_cards
 from utils.helpers import fmt_large_number, fmt_percent
 from utils.secrets import get_secret
 
@@ -31,90 +33,120 @@ with st.sidebar:
 st.title("📊 Financial Statements")
 
 ticker = st.session_state.get("ticker", "AAPL")
-pipeline = DataPipeline()
 
 col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     ticker = st.text_input("Ticker", value=ticker).upper().strip()
     st.session_state["ticker"] = ticker
 with col2:
-    period = st.selectbox("Period", ["annual", "quarter"], index=0)
+    period = st.selectbox("Period", ["Annual", "Quarterly"], index=0)
 with col3:
-    limit = st.selectbox("Years / Quarters", [4, 5, 8, 10], index=1)
+    limit = st.selectbox("Periods", [4, 5, 8, 10], index=1)
 
 if not ticker:
     st.warning("Enter a ticker symbol above.")
     st.stop()
 
+quarterly = period == "Quarterly"
+
+
+def _fmt_df(df: pd.DataFrame, lim: int) -> pd.DataFrame:
+    """Format a yfinance financial DataFrame for display."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.iloc[:, :lim].copy()
+    # Format column headers as clean dates
+    df.columns = [str(c)[:10] if not isinstance(c, str) else c for c in df.columns]
+    # Format numbers
+    def _fmt(v):
+        if pd.isna(v):
+            return "—"
+        try:
+            return fmt_large_number(float(v))
+        except Exception:
+            return str(v)
+    return df.applymap(_fmt)
+
+
+def _bar_chart(df_raw: pd.DataFrame, rows: list[str], title: str, lim: int):
+    if df_raw is None or df_raw.empty:
+        return
+    available = [r for r in rows if r in df_raw.index]
+    if not available:
+        return
+    sub = df_raw.loc[available, df_raw.columns[:lim]]
+    records = []
+    for row_name in available:
+        for col in sub.columns:
+            val = sub.loc[row_name, col]
+            if not pd.isna(val):
+                records.append({"Period": str(col)[:10], "Value": float(val), "Metric": row_name})
+    if not records:
+        return
+    fig = px.bar(pd.DataFrame(records), x="Period", y="Value", color="Metric",
+                 barmode="group", title=title, template="plotly_dark",
+                 height=400)
+    fig.update_layout(yaxis_tickformat=".2s", margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+
 with st.spinner(f"Loading financials for **{ticker}**..."):
+    t = yf.Ticker(ticker)
+    income_raw = t.quarterly_income_stmt if quarterly else t.income_stmt
+    balance_raw = t.quarterly_balance_sheet if quarterly else t.balance_sheet
+    cashflow_raw = t.quarterly_cashflow if quarterly else t.cashflow
     try:
-        stmts = pipeline.get_financial_statements(ticker, period=period, limit=limit)
-        overview = pipeline.get_company_overview(ticker)
-    except Exception as e:
-        st.error(f"Failed to fetch data: {e}")
-        st.stop()
+        info = t.info or {}
+    except Exception:
+        info = {}
 
-income = stmts["income"]
-balance = stmts["balance"]
-cashflow = stmts["cashflow"]
+# Company header
+name = info.get("longName", ticker)
+st.subheader(f"{name} ({ticker})")
+st.caption(f"{info.get('sector','')}{' · ' + info.get('industry','') if info.get('industry') else ''}")
 
-if not income and not balance and not cashflow:
-    st.error(
-        "No financial data returned. "
-        "Enter your FMP API key in the sidebar to load full statement data, "
-        "or check that the ticker symbol is valid."
-    )
-    st.stop()
-
-if overview.get("logo"):
-    st.image(overview["logo"], width=60)
-
-st.subheader(f"{overview.get('name', ticker)} ({ticker})")
-st.caption(f"{overview.get('sector', '')} · {overview.get('industry', '')} · {overview.get('exchange', '')}")
-
-if income:
-    latest = income[0]
-    render_metric_cards({
-        "Revenue": fmt_large_number(latest.get("revenue")),
-        "Gross Profit": fmt_large_number(latest.get("grossProfit")),
-        "Operating Income": fmt_large_number(latest.get("operatingIncome")),
-        "Net Income": fmt_large_number(latest.get("netIncome")),
-        "EBITDA": fmt_large_number(latest.get("ebitda")),
-        "EPS": f"${latest.get('eps', 0):.2f}" if latest.get("eps") else "N/A",
-        "Gross Margin": fmt_percent(latest.get("grossProfitRatio", 0) * 100 if latest.get("grossProfitRatio") else None),
-        "Net Margin": fmt_percent(latest.get("netIncomeRatio", 0) * 100 if latest.get("netIncomeRatio") else None),
-    })
+# Snapshot cards from info
+render_metric_cards({
+    "Market Cap": fmt_large_number(info.get("marketCap")),
+    "Revenue (TTM)": fmt_large_number(info.get("totalRevenue")),
+    "Net Income (TTM)": fmt_large_number(info.get("netIncomeToCommon")),
+    "EPS (TTM)": f"${info.get('trailingEps', 0):.2f}" if info.get("trailingEps") else "N/A",
+    "Gross Margin": fmt_percent((info.get("grossMargins") or 0) * 100),
+    "Net Margin": fmt_percent((info.get("profitMargins") or 0) * 100),
+    "Operating Margin": fmt_percent((info.get("operatingMargins") or 0) * 100),
+    "ROE": fmt_percent((info.get("returnOnEquity") or 0) * 100),
+})
 
 st.divider()
 
 tab_income, tab_balance, tab_cashflow = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
 
 with tab_income:
-    st.subheader("Income Statement")
-    render_financial_bar_chart(
-        income,
-        fields=["revenue", "grossProfit", "operatingIncome", "netIncome"],
-        labels=["Revenue", "Gross Profit", "Operating Income", "Net Income"],
-        title="Revenue & Profitability",
-    )
-    render_financial_table(income, statement="income")
+    if income_raw is None or income_raw.empty:
+        st.info("No income statement data available for this ticker.")
+    else:
+        _bar_chart(income_raw,
+                   ["Total Revenue", "Gross Profit", "Operating Income", "Net Income"],
+                   "Revenue & Profitability", limit)
+        st.dataframe(_fmt_df(income_raw, limit), use_container_width=True,
+                     height=min(50 + len(income_raw) * 35, 700))
 
 with tab_balance:
-    st.subheader("Balance Sheet")
-    render_financial_bar_chart(
-        balance,
-        fields=["totalAssets", "totalLiabilities", "totalStockholdersEquity"],
-        labels=["Total Assets", "Total Liabilities", "Shareholders Equity"],
-        title="Assets vs. Liabilities",
-    )
-    render_financial_table(balance, statement="balance")
+    if balance_raw is None or balance_raw.empty:
+        st.info("No balance sheet data available for this ticker.")
+    else:
+        _bar_chart(balance_raw,
+                   ["Total Assets", "Total Liabilities Net Minority Interest", "Stockholders Equity"],
+                   "Assets vs Liabilities", limit)
+        st.dataframe(_fmt_df(balance_raw, limit), use_container_width=True,
+                     height=min(50 + len(balance_raw) * 35, 700))
 
 with tab_cashflow:
-    st.subheader("Cash Flow Statement")
-    render_financial_bar_chart(
-        cashflow,
-        fields=["operatingCashFlow", "freeCashFlow", "capitalExpenditure"],
-        labels=["Operating Cash Flow", "Free Cash Flow", "CapEx"],
-        title="Cash Flow",
-    )
-    render_financial_table(cashflow, statement="cashflow")
+    if cashflow_raw is None or cashflow_raw.empty:
+        st.info("No cash flow data available for this ticker.")
+    else:
+        _bar_chart(cashflow_raw,
+                   ["Operating Cash Flow", "Free Cash Flow", "Capital Expenditure"],
+                   "Cash Flow", limit)
+        st.dataframe(_fmt_df(cashflow_raw, limit), use_container_width=True,
+                     height=min(50 + len(cashflow_raw) * 35, 700))
