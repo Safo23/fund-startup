@@ -3,6 +3,55 @@ from typing import Optional
 from .fmp_client import FMPClient
 from .yfinance_client import YFinanceClient
 
+_INCOME_MAP = {
+    "Total Revenue": "revenue",
+    "Cost Of Revenue": "costOfRevenue",
+    "Gross Profit": "grossProfit",
+    "Operating Expense": "operatingExpenses",
+    "Operating Income": "operatingIncome",
+    "EBITDA": "ebitda",
+    "Net Income": "netIncome",
+    "Basic EPS": "eps",
+    "Diluted EPS": "epsdiluted",
+}
+
+_BALANCE_MAP = {
+    "Total Assets": "totalAssets",
+    "Current Assets": "totalCurrentAssets",
+    "Cash And Cash Equivalents": "cashAndCashEquivalents",
+    "Total Liabilities Net Minority Interest": "totalLiabilities",
+    "Current Liabilities": "totalCurrentLiabilities",
+    "Long Term Debt": "longTermDebt",
+    "Stockholders Equity": "totalStockholdersEquity",
+}
+
+_CASHFLOW_MAP = {
+    "Operating Cash Flow": "operatingCashFlow",
+    "Capital Expenditure": "capitalExpenditure",
+    "Free Cash Flow": "freeCashFlow",
+    "Common Stock Dividend Paid": "dividendsPaid",
+    "Investing Cash Flow": "netCashUsedForInvestingActivities",
+    "Financing Cash Flow": "netCashUsedProvidedByFinancingActivities",
+}
+
+
+def _yf_df_to_fmp(df: pd.DataFrame, field_map: dict, limit: int) -> list[dict]:
+    """Convert a yfinance financial DataFrame (rows=fields, cols=dates) to FMP-style list of dicts."""
+    if df is None or df.empty:
+        return []
+    result = []
+    for col in list(df.columns)[:limit]:
+        date_str = str(col.date()) if hasattr(col, "date") else str(col)[:10]
+        row: dict = {"date": date_str}
+        for yf_key, fmp_key in field_map.items():
+            if yf_key in df.index:
+                val = df.loc[yf_key, col]
+                row[fmp_key] = None if pd.isna(val) else float(val)
+            else:
+                row[fmp_key] = None
+        result.append(row)
+    return result
+
 
 class DataPipeline:
     """Orchestrates data fetching from FMP and yfinance, merging into unified structures."""
@@ -12,8 +61,7 @@ class DataPipeline:
         self.yf = YFinanceClient()
 
     def get_company_overview(self, ticker: str) -> dict:
-        profile = {}
-        yf_info = {}
+        profile, yf_info = {}, {}
         try:
             profile = self.fmp.get_company_profile(ticker)
         except Exception:
@@ -22,8 +70,6 @@ class DataPipeline:
             yf_info = self.yf.get_info(ticker)
         except Exception:
             pass
-
-        # Prefer FMP data, fall back to yfinance
         return {
             "name": profile.get("companyName") or yf_info.get("longName", ticker),
             "sector": profile.get("sector") or yf_info.get("sector", "N/A"),
@@ -39,7 +85,10 @@ class DataPipeline:
         }
 
     def get_financial_statements(self, ticker: str, period: str = "annual", limit: int = 5) -> dict:
+        quarterly = period == "quarter"
         income, balance, cashflow = [], [], []
+
+        # Try FMP first
         try:
             income = self.fmp.get_income_statement(ticker, period=period, limit=limit)
         except Exception:
@@ -52,6 +101,27 @@ class DataPipeline:
             cashflow = self.fmp.get_cash_flow(ticker, period=period, limit=limit)
         except Exception:
             pass
+
+        # Fall back to yfinance when FMP returns nothing
+        if not income:
+            try:
+                df = self.yf.get_income_stmt(ticker, quarterly=quarterly)
+                income = _yf_df_to_fmp(df, _INCOME_MAP, limit)
+            except Exception:
+                pass
+        if not balance:
+            try:
+                df = self.yf.get_balance_sheet(ticker, quarterly=quarterly)
+                balance = _yf_df_to_fmp(df, _BALANCE_MAP, limit)
+            except Exception:
+                pass
+        if not cashflow:
+            try:
+                df = self.yf.get_cash_flow(ticker, quarterly=quarterly)
+                cashflow = _yf_df_to_fmp(df, _CASHFLOW_MAP, limit)
+            except Exception:
+                pass
+
         return {"income": income, "balance": balance, "cashflow": cashflow}
 
     def get_key_metrics(self, ticker: str, period: str = "annual", limit: int = 5) -> dict:
