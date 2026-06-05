@@ -4,6 +4,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _secret(key: str) -> str:
+    """Read from Streamlit secrets first, fall back to env vars."""
+    try:
+        return st.secrets.get(key, "") or os.getenv(key, "")
+    except Exception:
+        return os.getenv(key, "")
+
+
 st.set_page_config(
     page_title="Fund Startup — Stock Analysis",
     page_icon="📈",
@@ -11,7 +20,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Sidebar: global ticker input + API key
+# Inject API keys from secrets/env so all pages can access them
+if _secret("FMP_API_KEY"):
+    os.environ["FMP_API_KEY"] = _secret("FMP_API_KEY")
+if _secret("NEWSAPI_KEY"):
+    os.environ["NEWSAPI_KEY"] = _secret("NEWSAPI_KEY")
+
 with st.sidebar:
     st.title("📈 Fund Startup")
     st.caption("Stock Analysis Platform")
@@ -29,7 +43,7 @@ with st.sidebar:
 
     st.divider()
     fmp_key = st.text_input(
-        "FMP API Key (optional)",
+        "FMP API Key",
         value=os.getenv("FMP_API_KEY", ""),
         type="password",
         help="Get a free key at financialmodelingprep.com",
@@ -37,31 +51,38 @@ with st.sidebar:
     if fmp_key:
         os.environ["FMP_API_KEY"] = fmp_key
 
+    news_key = st.text_input(
+        "NewsAPI Key",
+        value=os.getenv("NEWSAPI_KEY", ""),
+        type="password",
+        help="Get a free key at newsapi.org",
+    )
+    if news_key:
+        os.environ["NEWSAPI_KEY"] = news_key
+
     st.divider()
     st.caption("Navigate using the sidebar pages above.")
 
-# Home / landing page
 st.title("Welcome to Fund Startup")
 st.markdown(
     """
-    A lightweight stock analysis platform powered by **Financial Modeling Prep** and **yfinance**.
+    A stock analysis platform powered by **Financial Modeling Prep**, **yfinance**, and **NewsAPI**.
 
     ### Getting Started
     1. Enter a ticker symbol in the sidebar (e.g. `AAPL`).
-    2. Optionally paste your **FMP API Key** for richer financial data.
-    3. Navigate to a page using the sidebar:
+    2. Navigate to a page:
 
     | Page | Description |
     |------|-------------|
     | **Financial Statements** | Income, balance sheet & cash flow with charts |
     | **Stock Analysis** | Price history, technicals & analyst ratings |
-    | **Key Metrics** | Valuation ratios, profitability & growth metrics |
-
-    > **Note:** Without an FMP API key, the app falls back to yfinance data where possible.
+    | **Key Metrics** | Valuation ratios, profitability & growth |
+    | **News** | Company news & market headlines |
     """
 )
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.info("📊 **Financial Statements**\nAnnual & quarterly financials")
 col2.info("📉 **Stock Analysis**\nPrice charts & technicals")
 col3.info("🔢 **Key Metrics**\nValuation & profitability ratios")
+col4.info("📰 **News**\nCompany & market headlines")
